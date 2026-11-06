@@ -36,6 +36,7 @@ window.__ModuleLoader__.load({
       untitled: '待安排',
       'state.draft': '草稿',
       collapse: '收回看板',
+      collapseHint: '收回看板（Esc）',
       draftPlaceholder: '第一条指令 — Enter 发送，Shift+Enter 换行',
       creating: '正在创建会话…',
       sendFailed: '第一条指令发送失败',
@@ -88,6 +89,7 @@ window.__ModuleLoader__.load({
       panel: 'Task board',
       untitled: 'To plan',
       collapse: 'Back to the board',
+      collapseHint: 'Back to the board (Esc)',
       draftPlaceholder: 'First instruction — Enter sends, Shift+Enter adds a line',
       creating: 'Creating the session…',
       sendFailed: 'The first instruction failed',
@@ -1349,7 +1351,7 @@ window.__ModuleLoader__.load({
       h('button', {
         type: 'button',
         className: 'tbwin-collapse',
-        title: t('collapse'),
+        title: t('collapseHint'),
         'aria-label': t('collapse'),
         onPointerDown: (event) => event.stopPropagation(),
         onClick: () => actions.collapseWindow(win.cardId),
@@ -1480,7 +1482,15 @@ window.__ModuleLoader__.load({
         const runningSince = new Map()
         /** Per-card window size, remembered for the page session (never persisted). */
         const windowSize = new Map()
-        const runtime = { runningSince }
+        const runtime = {
+          runningSince,
+          /**
+           * The window that last took a pointer down (or was just opened).
+           * Window-level keys resolve to it when the key event itself has no
+           * owner inside a window (for example after dragging the header).
+           */
+          activeCardId: null,
+        }
         let saveTimer = null
         let disposed = false
         let pollBusy = false
@@ -1745,6 +1755,7 @@ window.__ModuleLoader__.load({
               z: current.zTop + 1,
             }
             board.set({ ...current, windows: [...current.windows, win], zTop: current.zTop + 1 })
+            runtime.activeCardId = card.id
           },
 
           collapseWindow(cardId) {
@@ -1765,6 +1776,7 @@ window.__ModuleLoader__.load({
               windows: current.windows.filter((win) => win.cardId !== cardId),
               sendError,
             })
+            if (runtime.activeCardId === cardId) runtime.activeCardId = null
             writeNow()
           },
 
@@ -1772,6 +1784,7 @@ window.__ModuleLoader__.load({
             const current = board.getSnapshot()
             const target = current.windows.find((win) => win.cardId === cardId)
             if (target === undefined) return
+            runtime.activeCardId = cardId
             // Already front-most: re-publishing would re-render the embedded
             // conversation (and its editor) on every pointerdown inside it.
             if (current.windows.every((win) => win.z <= target.z)) return
@@ -2136,6 +2149,65 @@ window.__ModuleLoader__.load({
             }
           },
         }
+
+        // --- window keys -------------------------------------------------
+
+        /**
+         * Remember which window the pointer last entered, and clear it as soon
+         * as the pointer lands anywhere else. Escape belongs to the window the
+         * user is actually working in — not to a window left open behind the
+         * main conversation.
+         */
+        ctx.effect(() => {
+          const track = (event) => {
+            const target = event.target
+            const frame = target instanceof Element ? target.closest('.tbwin') : null
+            runtime.activeCardId = frame === null ? null : frame.getAttribute('data-card')
+          }
+          document.addEventListener('pointerdown', track, true)
+          return () => document.removeEventListener('pointerdown', track, true)
+        }, 'dsh-task-board: active window tracking')
+
+        /**
+         * Escape closes the current window.
+         *
+         * This rides the app-wide shortcut arbitration instead of a private
+         * document listener: the shared channel already accounts for IME
+         * composition, repeat presses, open menus/dialogs, and — crucially —
+         * DSH's own double-Escape “stop the running Turn” gesture. A handler
+         * earlier in the chain marks the event `defaultPrevented`, and we back
+         * off; a live Turn also keeps the key so the close never swallows the
+         * stop press. Everything else closes this window and only this one.
+         */
+        ctx.inject(['shortcuts'], (scope) => {
+          scope.effect(() => scope.shortcuts.observeFixedInput((input) => {
+            if (input.type !== 'keydown') return
+            const { gesture, context } = input
+            if (gesture.code !== 'Escape' || gesture.repeat || gesture.composing) return
+            if (gesture.defaultPrevented || gesture.control || gesture.alt || gesture.shift || gesture.meta) return
+            if (context.modal != null) return
+
+            const current = board.getSnapshot()
+            if (current.windows.length === 0) return
+            const element = context.target instanceof Element ? context.target : null
+            const frame = element === null ? null : element.closest('.tbwin')
+            const cardId = frame === null ? runtime.activeCardId : frame.getAttribute('data-card')
+            if (cardId === null || cardId === undefined) return
+
+            const win = current.windows.find((item) => item.cardId === cardId)
+            if (win === undefined) return
+            // While the pointer is in the hosted conversation, a live Turn keeps
+            // DSH's double-Escape stop. Chrome/body focus closes even then.
+            const inConversation = element !== null && element.closest('[data-conversation-session]') !== null
+            if (win.sessionId !== null && inConversation && lastRunning.get(win.sessionId) === true) return
+
+            input.consume()
+            // Make this the tracked window first, so collapsing it also clears
+            // the tracker: one Escape closes exactly one window.
+            runtime.activeCardId = cardId
+            actions.collapseWindow(cardId)
+          }), 'dsh-task-board: escape closes the current window')
+        })
 
         // --- slot registrations -----------------------------------------
 
