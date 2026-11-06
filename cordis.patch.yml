@@ -1,0 +1,4 @@
+# dsh-task-board: task board panel + floating task windows.
+- insert:
+    - id: dsh-task-board
+      name: '@local/dsh-task-board'

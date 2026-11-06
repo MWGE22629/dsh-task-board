@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Task Board",
+    "description": "A board of task cards. Opening a card raises a floating window that hosts that task's Session; collapsing the window puts the card back."
+  }
+}
