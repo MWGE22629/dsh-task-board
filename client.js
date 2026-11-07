@@ -23,6 +23,9 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react')
     const h = React.createElement
+    // The sidebar's session rows and this card must name the same moment the
+    // same way, so borrow the shared bucketing instead of re-deriving it.
+    const { relativeTime } = require('@deepseek-ai/dsh-client-ui-primitives')
 
     const NS = 'dsh-task-board'
     const PANEL_ID = 'taskboard'
@@ -66,6 +69,15 @@ window.__ModuleLoader__.load({
       laneHasCards: '该工作区还有任务，先清空再取消关注',
       noWorkspaces: '没有可用的工作区',
       runningFor: '已运行 {d}',
+      // Same buckets and words as the sidebar's session rows.
+      'time.now': '刚刚',
+      'time.minutes': '{n}分钟',
+      'time.hours': '{n}小时',
+      'time.days': '{n}天',
+      'time.months': '{n}个月',
+      'time.years': '{n}年',
+      'time.ago': '{t}前',
+      updatedAt: '上次更新：{time}',
       allWorkspaces: '全部工作区已上板',
       removeTask: '从看板移除',
       removeTaskConfirm: '再点一次确认',
@@ -118,6 +130,14 @@ window.__ModuleLoader__.load({
       laneHasCards: 'This workspace still has tasks; clear them before unfollowing',
       noWorkspaces: 'No workspace available',
       runningFor: 'Running for {d}',
+      'time.now': 'now',
+      'time.minutes': '{n}min',
+      'time.hours': '{n}h',
+      'time.days': '{n}d',
+      'time.months': '{n}mo',
+      'time.years': '{n}y',
+      'time.ago': '{t} ago',
+      updatedAt: 'Last updated: {time}',
       allWorkspaces: 'Every workspace is already on the board',
       removeTask: 'Remove from the board',
       removeTaskConfirm: 'Click again to confirm',
@@ -207,6 +227,7 @@ window.__ModuleLoader__.load({
 .tb-chip-stopped{color:var(--dsw-alias-state-warn-primary)}
 .tb-chip-settling{color:var(--dsw-alias-label-secondary)}
 .tb-elapsed{margin-left:auto;font-size:11px;color:var(--dsw-alias-label-secondary);flex:none;font-variant-numeric:tabular-nums}
+.tb-age{font-size:11px;color:var(--dsw-alias-label-tertiary);flex:none;font-variant-numeric:tabular-nums}
 .tb-pop{position:absolute;top:50px;right:0;z-index:60;min-width:236px;max-height:320px;overflow:auto;padding:6px;border-radius:10px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay);box-shadow:0 14px 36px rgba(0,0,0,.26)}
 .tb-pop-row{display:flex;width:100%;align-items:center;gap:8px;padding:7px 8px;border:none;border-radius:7px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;text-align:left;cursor:pointer}
 .tb-pop-row:hover{background:var(--dsw-alias-bg-layer-2)}
@@ -415,6 +436,18 @@ window.__ModuleLoader__.load({
       const minutes = Math.floor(total / 60)
       const seconds = total % 60
       return `${minutes}:${String(seconds).padStart(2, '0')}`
+    }
+
+    /** The sidebar row's compact age ("刚刚"/"5分钟"/"2天"), through this plugin's dictionary. */
+    function timeLabel(at, now, t) {
+      const { unit, n } = relativeTime(at, now)
+      return unit === 'now' ? t('time.now') : t(`time.${unit}`, { n })
+    }
+
+    /** Hover variant: distances wrap in the ago template; the now bucket stays bare. */
+    function agoLabel(at, now, t) {
+      const { unit, n } = relativeTime(at, now)
+      return unit === 'now' ? t('time.now') : t('time.ago', { t: t(`time.${unit}`, { n }) })
     }
 
     // --- peak/valley billing clock ---------------------------------------
@@ -714,6 +747,17 @@ window.__ModuleLoader__.load({
       const lastEvent = typeof digest?.lastEventAt === 'number' ? digest.lastEventAt : undefined
       const quietMs = state === 'running' && lastEvent !== undefined ? Math.max(0, now - lastEvent) : 0
       const stalled = quietMs >= 60000
+      // The moment the sidebar's session row dates: the Host's last update for
+      // this Session, falling back to the classified Turn ending or the last
+      // polled digest when the Session summary is not there. `createdAt` stays
+      // out: a card dragged in today from an old Session must still read "2天".
+      const stamps = card.sessionId === null
+        ? []
+        : [summary?.updatedAt, card.outcome?.at, digest?.lastEventAt]
+          .filter((value) => Number.isFinite(value) && value > 0)
+      const updatedAtMs = stamps.length === 0 ? undefined : Math.max(...stamps)
+      // Running cards already spend this slot on elapsed or quiet time.
+      const showAge = updatedAtMs !== undefined && state !== 'running' && state !== 'settling'
       // A Turn that ended abnormally can be nudged straight from the board: no
       // window, no conversation, one "继续" message sent to that Session.
       const resumeVisible = card.sessionId !== null && (state === 'failed' || state === 'stopped')
@@ -777,6 +821,12 @@ window.__ModuleLoader__.load({
           className: `tb-chip tb-chip-${state}`,
           title: note,
         }, t(`state.${state}`)),
+        showAge
+          ? h('span', {
+            className: 'tb-age',
+            title: t('updatedAt', { time: agoLabel(updatedAtMs, now, t) }),
+          }, timeLabel(updatedAtMs, now, t))
+          : null,
         busy ? h('span', { className: 'tb-card-busy' }, t('creating')) : null,
         stalled
           ? h('span', {
