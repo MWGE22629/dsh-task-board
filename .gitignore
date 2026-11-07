@@ -10,3 +10,6 @@ npm-debug.log*
 Thumbs.db
 .idea/
 .vscode/
+
+# local screenshot staging (not part of the plugin)
+show/
