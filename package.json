@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-task-board",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Task board panel: cards park on the board, open as floating windows that host that task's Session.",
   "type": "module",

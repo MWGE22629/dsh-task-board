@@ -253,6 +253,216 @@ function messageText(message) {
   return parts.join(' ')
 }
 
+// --- session-content search ----------------------------------------------
+//
+// The board searches only the sessions its cards already point at. That is a
+// deliberate scope: those sessions exist, they have a window to open, and the
+// search never turns the board into a second session browser.
+//
+// The query itself is a literal, case-insensitive, whitespace-flexible scan
+// over the semantic text of user/assistant messages. It goes through
+// `ctx.sessionQuery.filterEvents`, which is a full-log read with no FTS index
+// — so it works with the default `openAt: never` deployment, at the price of
+// reading each card's log per distinct query (memoized briefly below).
+
+const SEARCH_MIN_CHARS = 2
+const SEARCH_LIMIT = 40
+const SEARCH_PER_SESSION = 4
+const SEARCH_MAX_SESSIONS = 40
+const SEARCH_SESSION_TIMEOUT_MS = 5000
+const SEARCH_TOTAL_BUDGET_MS = 8000
+const SEARCH_CACHE_TTL_MS = 15000
+const SEARCH_CACHE_LIMIT = 24
+
+/** Escape a literal for use inside a RegExp. */
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+}
+
+/** Literal, case-insensitive, whitespace-flexible query pattern. */
+function searchPattern(query) {
+  const parts = query.trim().split(/\s+/u).map(escapeRegExp)
+  return new RegExp(parts.join('\\s+'), 'iu')
+}
+
+/** Collapse all whitespace runs to one space. */
+function collapseText(value) {
+  return value.replace(/\s+/gu, ' ').trim()
+}
+
+/** A short excerpt centred on the first match, or null when it does not match. */
+function snippetAround(text, pattern) {
+  const match = pattern.exec(text)
+  if (match === null) return null
+  const start = Math.max(0, match.index - 70)
+  const end = Math.min(text.length, match.index + match[0].length + 90)
+  const head = start > 0 ? '…' : ''
+  const tail = end < text.length ? '…' : ''
+  return `${head}${collapseText(text.slice(start, end))}${tail}`
+}
+
+/** Semantic prose of one event, for the no-sessionQuery fallback. */
+function eventProse(event) {
+  if (event?.type === 'user/message') return messageText({ content: event.data?.content })
+  if (event?.type === 'assistant/message') return messageText(event.data?.message)
+  return ''
+}
+
+/** Reject after `ms`; the losing promise is left to settle on its own. */
+function withTimeout(promise, ms) {
+  let timer
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(Object.assign(new Error('search timed out'), { code: 'taskboard/search-timeout' }))
+    }, ms)
+    timer.unref?.()
+  })
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+}
+
+/**
+ * Search the sessions parked on the board.
+ *
+ * Cards are the authorization boundary: a session id reaches this function
+ * only because a card on the board already carries it, and the card's
+ * workspace decides which lane-scoped query can see it.
+ */
+function createSearch(ctx, store) {
+  const cache = new Map()
+
+  const remember = (key, value) => {
+    cache.delete(key)
+    cache.set(key, { at: Date.now(), value })
+    if (cache.size > SEARCH_CACHE_LIMIT) {
+      const oldest = cache.keys().next().value
+      if (oldest !== undefined) cache.delete(oldest)
+    }
+  }
+
+  const cached = (key) => {
+    const entry = cache.get(key)
+    if (entry === undefined) return undefined
+    if (Date.now() - entry.at > SEARCH_CACHE_TTL_MS) {
+      cache.delete(key)
+      return undefined
+    }
+    return entry.value
+  }
+
+  /** Matching user/assistant documents for one session, live-first and surface-aware. */
+  const documents = async (sessionId, query) => {
+    const sessionQuery = ctx.get('sessionQuery')
+    if (typeof sessionQuery?.filterEvents === 'function') {
+      const docs = await sessionQuery.filterEvents(sessionId, [{ kind: 'text', text: query }])
+      if (!Array.isArray(docs)) return []
+      return docs.filter((doc) => doc.surface === 'current'
+        && (doc.type === 'user/message' || doc.type === 'assistant/message'))
+    }
+
+    // Fallback for a deployment without the session-query service: read the
+    // log through the persistence seam the board already uses for recall.
+    const persistence = ctx.get('sessionPersistence')
+    if (typeof persistence?.open !== 'function' || typeof persistence?.stat !== 'function') {
+      throw new Error('session search is unavailable')
+    }
+    const snapshot = await persistence.stat(sessionId)
+    if (snapshot === null || snapshot === undefined) return []
+    const handle = await persistence.open(sessionId, 'read')
+    try {
+      const { events } = await handle.read()
+      if (!Array.isArray(events)) return []
+      const pattern = searchPattern(query)
+      const hits = []
+      for (const event of events) {
+        const text = eventProse(event)
+        if (text === '' || !pattern.test(text)) continue
+        hits.push({ sessionId, seq: event.seq, type: event.type, time: event.time, text })
+      }
+      return hits
+    } finally {
+      await handle.close()
+    }
+  }
+
+  return async function search(payload) {
+    const query = typeof payload?.query === 'string' ? payload.query.trim() : ''
+    const requested = Array.isArray(payload?.workspaceIds)
+      ? payload.workspaceIds.filter((id) => typeof id === 'string')
+      : []
+    const workspaceIds = requested.length > 0 ? requested : null
+    if (query.length < SEARCH_MIN_CHARS) {
+      return { items: [], scanned: 0, truncated: false, failed: 0 }
+    }
+
+    const doc = await store.load()
+    const eligible = doc.cards.filter((card) => typeof card.sessionId === 'string'
+      && (workspaceIds === null || workspaceIds.includes(card.workspaceId)))
+
+    // One search per session even if two cards somehow point at it.
+    const targets = []
+    const seen = new Set()
+    for (const card of eligible) {
+      if (seen.has(card.sessionId)) continue
+      seen.add(card.sessionId)
+      targets.push(card)
+      if (targets.length >= SEARCH_MAX_SESSIONS) break
+    }
+
+    const key = JSON.stringify([query.toLowerCase(), workspaceIds === null ? null : [...workspaceIds].sort()])
+    const hit = cached(key)
+    if (hit !== undefined) return hit
+
+    const pattern = searchPattern(query)
+    const items = []
+    let scanned = 0
+    let failed = 0
+    let truncated = targets.length < eligible.length
+    const startedAt = Date.now()
+
+    for (const card of targets) {
+      if (items.length >= SEARCH_LIMIT) {
+        truncated = true
+        break
+      }
+      if (Date.now() - startedAt > SEARCH_TOTAL_BUDGET_MS) {
+        truncated = true
+        break
+      }
+      scanned += 1
+      let docs
+      try {
+        docs = await withTimeout(documents(card.sessionId, query), SEARCH_SESSION_TIMEOUT_MS)
+      } catch (error) {
+        failed += 1
+        ctx.logger?.warn?.(`[dsh-task-board] search skipped ${card.sessionId}: ${error?.message ?? error}`)
+        continue
+      }
+      const total = docs.length
+      for (const item of docs.slice(0, SEARCH_PER_SESSION)) {
+        if (items.length >= SEARCH_LIMIT) {
+          truncated = true
+          break
+        }
+        const snippet = snippetAround(item.text, pattern)
+        if (snippet === null) continue
+        items.push({
+          cardId: card.id,
+          sessionId: card.sessionId,
+          seq: item.seq,
+          type: item.type,
+          time: Number.isFinite(item.time) ? item.time : null,
+          snippet,
+          total,
+        })
+      }
+    }
+
+    const value = { items, scanned, truncated, failed }
+    remember(key, value)
+    return value
+  }
+}
+
 /** The text produced so far by one Assistant stream record list. */
 function streamText(stream) {
   if (!Array.isArray(stream)) return ''
@@ -528,9 +738,11 @@ export function apply(ctx) {
   }
 
   const store = createStore(boardFile())
+  const search = createSearch(ctx, store)
 
   const handle = async (method, payload) => {
     if (method === 'read') return { ok: true, value: await store.load() }
+    if (method === 'search') return { ok: true, value: await search(payload) }
     if (method === 'write') {
       const next = normalize(payload?.doc)
       await store.save(next)

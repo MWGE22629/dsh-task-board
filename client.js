@@ -23,6 +23,10 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react')
     const h = React.createElement
+    // The search field lives in a portal above the board (and above floating
+    // task windows), because its popover must not be clipped by the board's
+    // stacking context nor push the billing clock around when it expands.
+    const { createPortal } = require('react-dom')
     // The sidebar's session rows and this card must name the same moment the
     // same way, so borrow the shared bucketing instead of re-deriving it.
     const { relativeTime } = require('@deepseek-ai/dsh-client-ui-primitives')
@@ -90,6 +94,18 @@ window.__ModuleLoader__.load({
       sessionGone: '该会话已不存在',
       resume: '继续',
       resuming: '恢复中…',
+      // 会话正文搜索（只搜板上已有卡片的会话）
+      searchPlaceholder: '搜索会话',
+      searchHint: '输入至少 2 个字符，在已上板会话的正文里搜索',
+      searchScopeLabel: '范围',
+      searchScopeAll: '全部工作区',
+      searchOnlyCards: '只搜索板上已有卡片对应的会话',
+      searchSearching: '搜索中…',
+      searchEmpty: '没有命中',
+      searchFailed: '搜索失败',
+      searchPartial: '{n} 个会话读取失败',
+      searchTruncated: '结果已截断',
+      searchLocateMiss: '已打开会话，但没定位到那条消息',
       // 顶部居中的峰谷时段徽标
       peakNow: '现在是梁文【峰】',
       valleyNow: '现在是梁文【谷】',
@@ -150,6 +166,18 @@ window.__ModuleLoader__.load({
       sessionGone: 'That session no longer exists',
       resume: 'Continue',
       resuming: 'Resuming…',
+      // Session-content search (boarded sessions only)
+      searchPlaceholder: 'Search sessions',
+      searchHint: 'Type at least 2 characters to search inside the sessions parked on the board',
+      searchScopeLabel: 'Scope',
+      searchScopeAll: 'All workspaces',
+      searchOnlyCards: 'Only sessions that already have a card on the board',
+      searchSearching: 'Searching…',
+      searchEmpty: 'No match',
+      searchFailed: 'Search failed',
+      searchPartial: '{n} session(s) could not be read',
+      searchTruncated: 'Results truncated',
+      searchLocateMiss: 'Session opened, but the message could not be located',
       peakNow: 'Now DeepSeek [peak]',
       valleyNow: 'Now DeepSeek [valley]',
       valleyRemain: '{h}h {m}m left',
@@ -162,12 +190,42 @@ window.__ModuleLoader__.load({
 .tb-board{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary)}
 .tb-head{position:relative;display:flex;align-items:center;gap:12px;padding:18px 24px 20px}
 .tb-title{margin:0;font-size:18px;font-weight:600;line-height:26px}
-.tb-new{margin-left:auto;height:30px;padding:0 14px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;cursor:pointer}
+.tb-new{height:30px;padding:0 14px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;cursor:pointer}
 .tb-new:hover{background:var(--dsw-alias-bg-layer-2)}
+.tb-head-actions{display:flex;align-items:center;gap:10px;margin-left:auto;min-width:0}
 .tb-warn{font-size:12px;color:var(--dsw-alias-state-warn-primary);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tb-clock{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:12px;line-height:18px;white-space:nowrap;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;pointer-events:none}
+.tb-center{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);max-width:46%;min-width:0;pointer-events:none}
+.tb-clock{display:block;font-size:12px;line-height:18px;white-space:nowrap;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;pointer-events:none;overflow:hidden;text-overflow:ellipsis}
 .tb-clock-peak{color:var(--dsw-alias-state-warn-primary)}
 .tb-clock-valley{color:var(--dsw-alias-state-success-primary)}
+.tb-search-anchor{display:block;flex:none;width:127px;height:26px;pointer-events:none}
+.tb-search-layer{position:fixed;z-index:200;display:flex;align-items:center;pointer-events:auto}
+.tb-search-box{display:flex;align-items:center;gap:6px;height:26px;padding:0 9px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);transition:border-color .12s ease,background .12s ease}
+.tb-search-box:hover{border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary)}
+.tb-search-layer.is-open .tb-search-box{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary)}
+.tb-search-box input{width:88px;padding:0;border:0;outline:none;background:transparent;color:inherit;font:inherit;font-size:12px;line-height:16px}
+.tb-search-layer.is-open .tb-search-box input{width:190px}
+.tb-search-box input::placeholder{color:var(--dsw-alias-label-tertiary)}
+.tb-search-panel{position:fixed;z-index:auto;display:flex;flex-direction:column;max-height:min(460px,62vh);padding:10px;border-radius:12px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-overlay);box-shadow:0 18px 44px rgba(0,0,0,.34)}
+.tb-search-scope{display:flex;flex-wrap:wrap;align-items:center;gap:4px;max-height:78px;overflow-y:auto;padding:0 2px 8px;border-bottom:1px solid var(--dsw-alias-border-l1)}
+.tb-search-scope-label{font-size:11px;color:var(--dsw-alias-label-tertiary);margin-right:2px}
+.tb-scope-chip{height:22px;padding:0 8px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:20px;cursor:pointer;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tb-scope-chip:hover{border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary)}
+.tb-scope-chip.is-on{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-active)}
+.tb-search-note{padding:6px 2px 2px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
+.tb-search-body{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:1px;padding-top:4px}
+.tb-search-hint{padding:8px 6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
+.tb-hit{display:flex;flex-direction:column;gap:3px;width:100%;padding:7px 8px;border:0;border-radius:8px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.tb-hit:hover,.tb-hit.is-active{background:var(--dsw-alias-interactive-bg-hover)}
+.tb-hit-meta{display:flex;align-items:center;gap:8px;min-width:0;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary)}
+.tb-hit-card{font-weight:600;color:var(--dsw-alias-label-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.tb-hit-ws{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.tb-hit-time{margin-left:auto;flex:none;font-variant-numeric:tabular-nums}
+.tb-hit-text{font-size:12px;line-height:17px;color:var(--dsw-alias-label-secondary);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
+.tb-hit-text mark{background:rgba(255,196,0,.34);color:var(--dsw-alias-label-primary);border-radius:2px;padding:0 1px}
+.tbwin-row-flash{animation:tb-row-flash 2.4s ease}
+@keyframes tb-row-flash{0%,55%{background:rgba(255,196,0,.16)}100%{background:transparent}}
+::highlight(tb-search-hit){background-color:rgba(255,196,0,.5);color:inherit}
 .tb-empty{padding:0 24px;font-size:13px;color:var(--dsw-alias-label-secondary)}
 .tb-rows{display:flex;align-items:center;gap:6px}
 .tb-rows-label{font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
@@ -918,6 +976,463 @@ window.__ModuleLoader__.load({
       }, text)
     }
 
+    // --- session-content search -------------------------------------------
+    //
+    // Only sessions that already own a board card are searched: a card is the
+    // user's statement that this session matters, and it is also what gives a
+    // hit somewhere to open. Locating a hit inside the hosted conversation is
+    // best-effort by design — the platform exposes no "open at seq" API — so we
+    // page the window back to the hit and match the message text in the DOM.
+    //
+    // The anchor/normalise/flash helpers are adapted from dsh-session-workbench
+    // (MIT, https://github.com/PolinniZhong/dsh-session-workbench), which solved
+    // the same locate problem against the same chat DOM.
+
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+    /** Settle with `promise`, or reject after `ms` so a stuck read never freezes the UI. */
+    function raceTimeout(promise, ms) {
+      let timer
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('timed out')), ms)
+      })
+      return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+    }
+
+    function normText(value) {
+      return String(value ?? '').replace(/\s+/gu, '')
+    }
+
+    /**
+     * Markdown-clean slices of the hit text, longest first. Several candidates
+     * are kept because a rendered message may not contain every raw-text token
+     * (a URL's href, a fenced block's delimiter, …).
+     */
+    function stableAnchors(text) {
+      const segments = String(text ?? '').split(/[\s*#>`\-[\]()|_~=…]+/u).filter((segment) => segment.length >= 6)
+      if (segments.length === 0) return []
+      segments.sort((a, b) => b.length - a.length)
+      return [...new Set(segments.map((segment) => segment.slice(0, 48)))].slice(0, 3)
+    }
+
+    /** Literal, case-insensitive, whitespace-flexible query matcher (global). */
+    function queryPattern(query) {
+      const parts = query.trim().split(/\s+/u).map((part) => part.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'))
+      if (parts.length === 0 || parts.join('') === '') return null
+      return new RegExp(parts.join('\\s+'), 'giu')
+    }
+
+    /** Snippet nodes with the query occurrences wrapped in <mark>. */
+    function highlightParts(text, query) {
+      const pattern = queryPattern(query)
+      if (pattern === null) return text
+      const nodes = []
+      let cursor = 0
+      for (const match of text.matchAll(pattern)) {
+        if (match.index > cursor) nodes.push(text.slice(cursor, match.index))
+        nodes.push(h('mark', { key: `mark-${match.index}` }, match[0]))
+        cursor = match.index + match[0].length
+      }
+      if (cursor < text.length) nodes.push(text.slice(cursor))
+      return nodes
+    }
+
+    /** The floating window that hosts `cardId`, once its conversation mounted. */
+    function findWindow(cardId) {
+      for (const frame of document.querySelectorAll('.tbwin[data-card]')) {
+        if (frame.getAttribute('data-card') === cardId
+          && frame.querySelector('[data-conversation-content]') !== null) return frame
+      }
+      return null
+    }
+
+    /** The rendered message row whose text contains one of the anchors. */
+    function findAnchorRow(frame, needles) {
+      const rows = frame.querySelectorAll('[data-chat-anchor-key]')
+      for (const needle of needles) {
+        for (const row of rows) {
+          if (normText(row.textContent).includes(needle)) return row
+        }
+      }
+      return null
+    }
+
+    /** Scroll the hit into view and flash its row (twice: follow-tail can snap back). */
+    function flashRow(row) {
+      const scroll = (behavior) => {
+        try {
+          row.scrollIntoView({ behavior, block: 'center' })
+        } catch {
+          row.scrollIntoView()
+        }
+      }
+      scroll('smooth')
+      setTimeout(() => { if (row.isConnected) scroll('auto') }, 320)
+      setTimeout(() => { if (row.isConnected) scroll('auto') }, 900)
+      row.classList.add('tbwin-row-flash')
+      setTimeout(() => row.classList.remove('tbwin-row-flash'), 2400)
+    }
+
+    /**
+     * Paint the query occurrences inside one row with the CSS Custom Highlight
+     * API. No DOM nodes are inserted, so React's reconciliation is untouched and
+     * the highlight disappears on the next render or after the timeout.
+     */
+    function highlightQuery(row, query) {
+      const pattern = queryPattern(query)
+      if (pattern === null || typeof Highlight !== 'function'
+        || typeof CSS === 'undefined' || CSS.highlights === undefined) return
+      const ranges = []
+      const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT)
+      while (walker.nextNode()) {
+        const node = walker.currentNode
+        const text = node.data
+        pattern.lastIndex = 0
+        let match = pattern.exec(text)
+        while (match !== null) {
+          const range = document.createRange()
+          range.setStart(node, match.index)
+          range.setEnd(node, match.index + match[0].length)
+          ranges.push(range)
+          if (match[0].length === 0) break
+          match = pattern.exec(text)
+        }
+      }
+      if (ranges.length === 0) return
+      CSS.highlights.set('tb-search-hit', new Highlight(...ranges))
+      setTimeout(() => CSS.highlights.delete('tb-search-hit'), 6000)
+    }
+
+    /** Line-art magnifier used by the header search field. */
+    function MagnifierIcon({ size = 13 }) {
+      return h('svg', {
+        viewBox: '0 0 16 16',
+        width: size,
+        height: size,
+        fill: 'none',
+        stroke: 'currentColor',
+        strokeWidth: 1.4,
+        strokeLinecap: 'round',
+        strokeLinejoin: 'round',
+        'aria-hidden': true,
+        style: { display: 'block', flex: 'none' },
+      },
+      h('circle', { cx: 7, cy: 7, r: 4.2 }),
+      h('path', { d: 'M10.2 10.2 13.5 13.5' }))
+    }
+
+    /**
+     * Header search field + result popover.
+     *
+     * Scope is two-dimensional by intent but one-dimensional today: the session
+     * dimension is fixed to "sessions that already have a card" (the only ones
+     * that can be opened here), while the workspace dimension is chosen by the
+     * chips — every followed workspace, or a subset.
+     */
+    function SearchBox(props) {
+      const { t, actions, runtime } = props
+      const workspaces = Array.isArray(props.workspaces) ? props.workspaces : []
+      const cards = Array.isArray(props.cards) ? props.cards : []
+      const sessions = props.sessions
+      const [open, setOpen] = React.useState(false)
+      const [query, setQuery] = React.useState('')
+      const [scope, setScope] = React.useState([])
+      const [active, setActive] = React.useState(0)
+      const [result, setResult] = React.useState({ phase: 'idle', items: [], failed: 0, truncated: false })
+      const rootRef = React.useRef(null)
+      const inputRef = React.useRef(null)
+      const timerRef = React.useRef(null)
+      const runRef = React.useRef(0)
+      const anchorRef = React.useRef(null)
+      const layerRef = React.useRef(null)
+      const [anchor, setAnchor] = React.useState(null)
+      const [boxWidth, setBoxWidth] = React.useState(0)
+
+      // The visible field lives in a fixed portal; this in-flow anchor reserves
+      // its slot immediately left of "关注工作区" and marks its right edge, so
+      // the field expands leftward without moving the button.
+      const measure = React.useCallback(() => {
+        const node = anchorRef.current
+        if (node === null) return
+        const rect = node.getBoundingClientRect()
+        setAnchor((previous) => (previous !== null
+          && Math.abs(previous.right - rect.right) < 0.5
+          && Math.abs(previous.top - rect.top) < 0.5
+          ? previous
+          : { right: rect.right, top: rect.top }))
+      }, [])
+
+      React.useLayoutEffect(() => {
+        measure()
+        const center = anchorRef.current?.parentElement
+        let observer = null
+        if (typeof ResizeObserver === 'function' && center !== null && center !== undefined) {
+          observer = new ResizeObserver(measure)
+          observer.observe(center)
+        }
+        window.addEventListener('resize', measure)
+        return () => {
+          observer?.disconnect()
+          window.removeEventListener('resize', measure)
+        }
+      }, [measure])
+
+      // The expanded field is wider; keep the panel centred under the actual
+      // field and clamped inside the viewport.
+      React.useLayoutEffect(() => {
+        const layer = layerRef.current
+        if (layer === null) return
+        const update = () => {
+          const width = layer.getBoundingClientRect().width
+          setBoxWidth((previous) => (Math.abs(previous - width) < 0.5 ? previous : width))
+        }
+        update()
+        let observer = null
+        if (typeof ResizeObserver === 'function') {
+          observer = new ResizeObserver(update)
+          observer.observe(layer)
+        }
+        return () => observer?.disconnect()
+      }, [anchor, open])
+
+      React.useEffect(() => {
+        runtime.searchOpen = open
+        return () => { runtime.searchOpen = false }
+      }, [open])
+
+      const close = React.useCallback(() => {
+        setOpen(false)
+        setActive(0)
+      }, [])
+
+      const runSearch = React.useCallback(async (text) => {
+        const trimmed = text.trim()
+        if (trimmed.length < 2) {
+          setResult({ phase: 'idle', items: [], failed: 0, truncated: false })
+          return
+        }
+        const id = ++runRef.current
+        setResult((previous) => ({ ...previous, phase: 'loading' }))
+        try {
+          const value = await actions.searchSessions(trimmed, scope.length === 0 ? null : scope)
+          if (id !== runRef.current) return
+          setResult({
+            phase: 'done',
+            forQuery: trimmed,
+            items: Array.isArray(value?.items) ? value.items : [],
+            failed: Number(value?.failed) || 0,
+            truncated: value?.truncated === true,
+          })
+          setActive(0)
+        } catch (error) {
+          if (id !== runRef.current) return
+          setResult({
+            phase: 'error',
+            items: [],
+            failed: 0,
+            truncated: false,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+      }, [actions, scope])
+
+      React.useEffect(() => {
+        if (!open) return
+        if (timerRef.current !== null) clearTimeout(timerRef.current)
+        const trimmed = query.trim()
+        if (trimmed.length < 2) {
+          // A shorter query supersedes any in-flight response.
+          runRef.current += 1
+          setResult({ phase: 'idle', items: [], failed: 0, truncated: false })
+          return
+        }
+        timerRef.current = setTimeout(() => {
+          timerRef.current = null
+          void runSearch(trimmed)
+        }, 300)
+        return () => {
+          if (timerRef.current !== null) clearTimeout(timerRef.current)
+        }
+      }, [query, scope, open, runSearch])
+
+      React.useEffect(() => {
+        if (!open) return
+        const onPointerDown = (event) => {
+          if (rootRef.current !== null && !rootRef.current.contains(event.target)) close()
+        }
+        document.addEventListener('pointerdown', onPointerDown, true)
+        return () => document.removeEventListener('pointerdown', onPointerDown, true)
+      }, [open, close])
+
+      // Escape belongs to the popover while it is open, wherever focus sits.
+      // The board's window-close shortcut backs off on `runtime.searchOpen`.
+      React.useEffect(() => {
+        if (!open) return
+        const onKey = (event) => {
+          if (event.key !== 'Escape') return
+          event.preventDefault()
+          event.stopPropagation()
+          close()
+        }
+        document.addEventListener('keydown', onKey, true)
+        return () => document.removeEventListener('keydown', onKey, true)
+      }, [open, close])
+
+      const toggleScope = (workspaceId) => {
+        setScope((previous) => (previous.includes(workspaceId)
+          ? previous.filter((id) => id !== workspaceId)
+          : [...previous, workspaceId]))
+      }
+
+      const openHit = async (item) => {
+        close()
+        try {
+          const outcome = await actions.revealSearchHit({ ...item, query: query.trim() })
+          if (outcome?.located === false) console.warn(`[dsh-task-board] ${t('searchLocateMiss')}`)
+        } catch (error) {
+          console.warn('[dsh-task-board] reveal failed:', error)
+        }
+      }
+
+      const onKeyDown = (event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          event.stopPropagation()
+          close()
+          return
+        }
+        if (event.key === 'Enter') {
+          event.preventDefault()
+          if (timerRef.current !== null) {
+            clearTimeout(timerRef.current)
+            timerRef.current = null
+            void runSearch(query)
+            return
+          }
+          const fresh = result.phase === 'done' && result.forQuery === query.trim()
+          if (fresh && result.items.length > 0) void openHit(result.items[active] ?? result.items[0])
+          else void runSearch(query)
+          return
+        }
+        if (event.key === 'ArrowDown' && result.phase === 'done' && result.items.length > 0) {
+          event.preventDefault()
+          setActive((index) => (index + 1) % result.items.length)
+          return
+        }
+        if (event.key === 'ArrowUp' && result.phase === 'done' && result.items.length > 0) {
+          event.preventDefault()
+          setActive((index) => (index - 1 + result.items.length) % result.items.length)
+        }
+      }
+
+      const cardOf = (item) => cards.find((card) => card.id === item.cardId)
+      const workspaceOf = (card) => workspaces.find((workspace) => workspace.workspaceId === card?.workspaceId)
+      const cardTitle = (item) => {
+        const card = cardOf(item)
+        const summary = sessions?.byId?.[item.sessionId]
+        return card?.title || summaryTitle(summary) || t('untitled')
+      }
+
+      let body
+      if (query.trim().length < 2 || result.phase === 'idle') {
+        body = h('div', { className: 'tb-search-hint' }, t('searchHint'))
+      } else if (result.phase === 'loading') {
+        body = h('div', { className: 'tb-search-hint' }, t('searchSearching'))
+      } else if (result.phase === 'error') {
+        body = h('div', { className: 'tb-search-hint' }, `${t('searchFailed')}: ${result.error ?? ''}`)
+      } else if (result.items.length === 0) {
+        body = h('div', { className: 'tb-search-hint' }, t('searchEmpty'))
+      } else {
+        body = result.items.map((item, index) => {
+          const card = cardOf(item)
+          const workspace = workspaceOf(card)
+          const label = workspace?.title ?? card?.workspacePath ?? ''
+          return h('button', {
+            key: `${item.cardId}:${item.seq}`,
+            type: 'button',
+            className: `tb-hit${index === active ? ' is-active' : ''}`,
+            onMouseEnter: () => setActive(index),
+            onClick: () => { void openHit(item) },
+          },
+          h('span', { className: 'tb-hit-meta' },
+            h('span', { className: 'tb-hit-card' }, cardTitle(item)),
+            label === '' ? null : h('span', { className: 'tb-hit-ws' }, label),
+            item.total > 1 ? h('span', { className: 'tb-hit-ws' }, `${item.total}×`) : null,
+            h('span', { className: 'tb-hit-time' },
+              item.time === null || item.time === undefined ? '' : timeLabel(item.time, Date.now(), t))),
+          h('span', { className: 'tb-hit-text' }, highlightParts(item.snippet ?? '', query)))
+        })
+      }
+
+      const viewportWidth = typeof window === 'undefined' ? 1200 : window.innerWidth
+      const panelWidth = Math.max(260, Math.min(560, viewportWidth - 24))
+      const fieldWidth = boxWidth === 0 ? 127 : boxWidth
+      const fieldLeft = anchor === null ? 12 : anchor.right - fieldWidth
+      const panelLeft = anchor === null ? 12 : Math.min(
+        Math.max(12, fieldLeft + fieldWidth / 2 - panelWidth / 2),
+        Math.max(12, viewportWidth - panelWidth - 12),
+      )
+      const panelTop = anchor === null ? 0 : anchor.top + 34
+
+      return h(React.Fragment, null,
+        h('div', { ref: anchorRef, className: 'tb-search-anchor', 'aria-hidden': true }),
+        anchor === null || typeof document === 'undefined' ? null : createPortal(
+          h('div', {
+            ref: rootRef,
+            className: `tb-search-layer${open ? ' is-open' : ''}`,
+            style: { right: viewportWidth - anchor.right, top: anchor.top },
+          },
+          h('div', {
+            className: 'tb-search-box',
+            onClick: () => {
+              setOpen(true)
+              inputRef.current?.focus?.()
+            },
+          },
+            h(MagnifierIcon, null),
+            h('input', {
+              ref: inputRef,
+              type: 'search',
+              value: query,
+              maxLength: 120,
+              placeholder: t('searchPlaceholder'),
+              'aria-label': t('searchPlaceholder'),
+              onFocus: () => setOpen(true),
+              onChange: (event) => setQuery(event.target.value),
+              onKeyDown,
+            })),
+          open
+            ? h('div', {
+              className: 'tb-search-panel',
+              role: 'dialog',
+              'aria-label': t('searchPlaceholder'),
+              style: { left: panelLeft, top: panelTop, width: panelWidth },
+            },
+            workspaces.length === 0
+              ? null
+              : h('div', { className: 'tb-search-scope' },
+                h('span', { className: 'tb-search-scope-label' }, t('searchScopeLabel')),
+                h('button', {
+                  type: 'button',
+                  className: `tb-scope-chip${scope.length === 0 ? ' is-on' : ''}`,
+                  onClick: () => setScope([]),
+                }, t('searchScopeAll')),
+                workspaces.map((workspace) => h('button', {
+                  key: workspace.workspaceId,
+                  type: 'button',
+                  title: workspace.path,
+                  className: `tb-scope-chip${scope.includes(workspace.workspaceId) ? ' is-on' : ''}`,
+                  onClick: () => toggleScope(workspace.workspaceId),
+                }, workspace.title ?? workspace.path))),
+            h('div', { className: 'tb-search-note' },
+              t('searchOnlyCards'),
+              result.phase === 'done' && result.truncated ? ` · ${t('searchTruncated')}` : '',
+              result.phase === 'done' && result.failed > 0 ? ` · ${t('searchPartial', { n: result.failed })}` : ''),
+            h('div', { className: 'tb-search-body' }, body))
+            : null),
+          document.body))
+    }
+
     /** `main / taskboard` — the lanes, the new-task controls, the follow-workspace picker, the billing badge. */
     function TaskBoardPanel(props) {
       const { board, actions, runtime, useSessions, useWorkspaces, useSessionStatus } = props
@@ -1130,7 +1645,8 @@ window.__ModuleLoader__.load({
       },
       h('header', { className: 'tb-head' },
         h('h1', { className: 'tb-title' }, t('panel')),
-        h(PeakClockBadge, { t }),
+        h('div', { className: 'tb-center' },
+          h(PeakClockBadge, { t })),
         h('div', { className: 'tb-rows' },
           h('span', { className: 'tb-rows-label' }, t('laneRowsPrefix')),
           h('div', {
@@ -1146,13 +1662,22 @@ window.__ModuleLoader__.load({
             onClick: () => actions.setLaneRows(rows),
           }, String(rows)))),
           h('span', { className: 'tb-rows-label' }, t('laneRowsSuffix'))),
-        h('button', {
-          type: 'button',
-          className: 'tb-new',
-          onClick: () => setPickerOpen((value) => !value),
-        }, t('addWorkspace')),
-        state.storageError === null ? null
-          : h('span', { className: 'tb-warn', title: state.storageError }, t('storageUnavailable')),
+        h('div', { className: 'tb-head-actions' },
+          h(SearchBox, {
+            t,
+            actions,
+            runtime,
+            workspaces: items.filter((item) => laneIds.includes(item.workspaceId)),
+            cards: state.cards,
+            sessions,
+          }),
+          h('button', {
+            type: 'button',
+            className: 'tb-new',
+            onClick: () => setPickerOpen((value) => !value),
+          }, t('addWorkspace')),
+          state.storageError === null ? null
+            : h('span', { className: 'tb-warn', title: state.storageError }, t('storageUnavailable'))),
         pickerOpen
           ? [
             h('div', { key: 'scrim', className: 'tb-scrim', onClick: () => setPickerOpen(false) }),
@@ -1540,6 +2065,8 @@ window.__ModuleLoader__.load({
            * owner inside a window (for example after dragging the header).
            */
           activeCardId: null,
+          /** True while the header search popover owns Escape. */
+          searchOpen: false,
         }
         let saveTimer = null
         let disposed = false
@@ -2101,6 +2628,78 @@ window.__ModuleLoader__.load({
             }
           },
 
+          /**
+           * Session-content search over the board's own cards. The Host owns the
+           * scan (and the literal-match semantics); this is a plain RPC.
+           */
+          async searchSessions(query, workspaceIds) {
+            return transport.call('search', {
+              query,
+              workspaceIds: Array.isArray(workspaceIds) ? workspaceIds : null,
+            })
+          },
+
+          /**
+           * Open the hit's card window, page its conversation back to the hit,
+           * then scroll to the message row and paint the query occurrences.
+           *
+           * Returns `{located}`; false means the window is open but the exact
+           * message could not be matched (markdown rendering, older-than-window
+           * hit, or a long page-out).
+           */
+          async revealSearchHit(hit) {
+            if (hit === null || typeof hit !== 'object' || typeof hit.cardId !== 'string') {
+              return { located: false }
+            }
+            actions.openCard(hit.cardId)
+
+            const needles = stableAnchors(hit.snippet)
+            if (needles.length === 0) return { located: false }
+            const seq = Number.isFinite(hit.seq) ? hit.seq : null
+            const sessions = ctx.get('sessions')
+            const deadline = Date.now() + 15000
+            let session
+            let lastPageAt = 0
+
+            // One click has to do everything: the window mounts, the Session
+            // binds, the tail page lands, then older pages load. Each of those
+            // is asynchronous and may finish in any order, so keep converging
+            // instead of giving one attempt a fixed budget.
+            while (Date.now() < deadline) {
+              const frame = findWindow(hit.cardId)
+              if (frame !== null) {
+                if (session === undefined) session = sessions?.binding?.(hit.sessionId)?.session
+                if (session !== undefined && session !== null) {
+                  try {
+                    if (typeof session.open === 'function' && session.openState !== 'open') {
+                      await raceTimeout(session.open(), 3000)
+                    }
+                    if (seq !== null && Number.isFinite(session.baseSeq) && session.baseSeq > seq
+                      && Date.now() - lastPageAt > 1200) {
+                      lastPageAt = Date.now()
+                      if (typeof session.loadThrough === 'function') {
+                        await raceTimeout(session.loadThrough(seq), 8000)
+                      } else if (typeof session.loadOlder === 'function') {
+                        await raceTimeout(session.loadOlder(), 6000)
+                      }
+                    }
+                  } catch (error) {
+                    // A transient open/page failure is retried by the loop.
+                    console.warn('[dsh-task-board] search locate paging failed:', error)
+                  }
+                }
+                const row = findAnchorRow(frame, needles)
+                if (row !== null) {
+                  flashRow(row)
+                  if (typeof hit.query === 'string') highlightQuery(row, hit.query)
+                  return { located: true }
+                }
+              }
+              await sleep(120)
+            }
+            return { located: false }
+          },
+
           /** One read now, bounded retries while the Host commits the Turn, then a neutral fallback. */
           reconcileOutcomes(sessionIds) {
             void actions.resolveOutcomes(sessionIds)
@@ -2236,6 +2835,8 @@ window.__ModuleLoader__.load({
             if (gesture.code !== 'Escape' || gesture.repeat || gesture.composing) return
             if (gesture.defaultPrevented || gesture.control || gesture.alt || gesture.shift || gesture.meta) return
             if (context.modal != null) return
+            // The header search popover owns Escape while it is open.
+            if (runtime.searchOpen) return
 
             const current = board.getSnapshot()
             if (current.windows.length === 0) return
