@@ -27,9 +27,6 @@ window.__ModuleLoader__.load({
     // task windows), because its popover must not be clipped by the board's
     // stacking context nor push the billing clock around when it expands.
     const { createPortal } = require('react-dom')
-    // The sidebar's session rows and this card must name the same moment the
-    // same way, so borrow the shared bucketing instead of re-deriving it.
-    const { relativeTime } = require('@deepseek-ai/dsh-client-ui-primitives')
 
     const NS = 'dsh-task-board'
     const PANEL_ID = 'taskboard'
@@ -494,6 +491,29 @@ window.__ModuleLoader__.load({
       const minutes = Math.floor(total / 60)
       const seconds = total % 60
       return `${minutes}:${String(seconds).padStart(2, '0')}`
+    }
+
+    /**
+     * The sidebar's relative-time bucketing, inlined. The primitives package is
+     * a sanctioned implicit baseline external for Module Loader packages, but
+     * its named exports carry no stability promise: a dropped `relativeTime`
+     * export would crash the whole board at render time. Buckets copied
+     * verbatim from 0.2.2-rc.1 so the sidebar row and this card still name the
+     * same moment the same way.
+     * ponytail: if primitives ever documents a stable time API, require that
+     * again instead of this copy.
+     */
+    function relativeTime(at, now) {
+      const MIN = 60000
+      const HOUR = 3600000
+      const DAY = 86400000
+      const diff = Math.max(0, now - at)
+      if (diff < MIN) return { unit: 'now', n: 0 }
+      if (diff < HOUR) return { unit: 'minutes', n: Math.floor(diff / MIN) }
+      if (diff < DAY) return { unit: 'hours', n: Math.floor(diff / HOUR) }
+      if (diff < 30 * DAY) return { unit: 'days', n: Math.floor(diff / DAY) }
+      if (diff < 365 * DAY) return { unit: 'months', n: Math.floor(diff / (30 * DAY)) }
+      return { unit: 'years', n: Math.floor(diff / (365 * DAY)) }
     }
 
     /** The sidebar row's compact age ("刚刚"/"5分钟"/"2天"), through this plugin's dictionary. */
